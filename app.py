@@ -16,7 +16,7 @@ os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
 def load_memory() -> str:
     if not os.path.exists(MEMORY_FILE):
-        return "No saved profile facts yet."
+        return "*No saved goals yet. Run an action to build your memory!*"
     with open(MEMORY_FILE, "r") as f:
         items = json.load(f)
     return "\n".join(f"- {item}" for item in items[-15:])
@@ -34,20 +34,20 @@ def save_memory(fact: str):
 def list_workspace_files() -> str:
     files = sorted(os.listdir(WORKSPACE_DIR))
     if not files:
-        return "*No files created yet.*"
+        return "*No files generated yet. Trigger any pillar to create files!*"
     return "\n".join(
-        f"- 📄 **`{fn}`** ({os.path.getsize(os.path.join(WORKSPACE_DIR, fn))} bytes)"
+        f"- 📄 **`{fn}`** · `{os.path.getsize(os.path.join(WORKSPACE_DIR, fn))} B`"
         for fn in files
     )
 
 def read_workspace_file(filename: str) -> str:
     if not filename:
-        return "Select a file name above to preview its contents."
+        return "*Type a file name above (e.g. `reel_scripts.md`) and click Preview.*"
     fpath = os.path.join(WORKSPACE_DIR, os.path.basename(filename.strip()))
     if not os.path.exists(fpath):
-        return f"File `{filename}` not found in workspace."
+        return f"⚠️ File `{filename}` not found."
     with open(fpath, "r", encoding="utf-8") as f:
-        return f"### 📄 Preview: `{filename}`\n\n```text\n{f.read()}\n```"
+        return f"### 📄 `{filename}`\n\n```text\n{f.read()}\n```"
 
 def fetch_live_jobs() -> str:
     try:
@@ -72,7 +72,7 @@ def fetch_github_bounties() -> str:
 
 def fetch_live_opportunities() -> str:
     try:
-        ids = requests.get("https://firebaseio.com", timeout=8).json()[:8]
+        ids = requests.get("https://firebaseio.com", timeout=8).json()[:5]
         out = []
         for sid in ids:
             it = requests.get(f"https://firebaseio.com{sid}.json", timeout=5).json()
@@ -94,13 +94,11 @@ async def fetch_url_via_mcp(url: str) -> str:
 
 def execute_system_actions(ai_text: str):
     logs = []
-    # 1. Memory Saves
     for fact in re.findall(r'\[REMEMBER:\s*(.*?)\]', ai_text):
         save_memory(fact.strip())
-        logs.append(f"🧠 Saved to Memory: *{fact.strip()}*")
+        logs.append(f"🧠 **Memory Updated:** *{fact.strip()}*")
     ai_text = re.sub(r'\[REMEMBER:\s*.*?\]', '', ai_text)
 
-    # 2. File Saves
     pattern = r'\[SAVE_FILE:\s*([^\]]+)\](.*?)\[/SAVE_FILE\]'
     for filename, content in re.findall(pattern, ai_text, flags=re.DOTALL):
         safe_name = os.path.basename(filename.strip())
@@ -108,31 +106,23 @@ def execute_system_actions(ai_text: str):
         mode = "a" if (safe_name.endswith(".csv") and os.path.exists(filepath)) else "w"
         with open(filepath, mode, encoding="utf-8") as f:
             f.write(content.strip() + "\n")
-        logs.append(f"💾 Saved File: **`workspace/{safe_name}`**")
+        logs.append(f"💾 **Saved to Workspace:** `workspace/{safe_name}`")
     ai_text = re.sub(pattern, '', ai_text, flags=re.DOTALL)
 
-    # 3. Copy Pitch/Script to Mac Clipboard
     clip_match = re.search(r'\[COPY_CLIPBOARD\](.*?)\[/COPY_CLIPBOARD\]', ai_text, flags=re.DOTALL)
     if clip_match:
         clip_text = clip_match.group(1).strip()
         try:
             subprocess.run(["pbcopy"], input=clip_text.encode("utf-8"))
+            logs.append("📋 **Copied Pitch/Script to Clipboard!**")
         except Exception:
             pass
-        logs.append("📋 **Copied ready-to-send pitch/script to your Mac Clipboard!** (Just press `Cmd+V`)")
     ai_text = re.sub(r'\[COPY_CLIPBOARD\].*?\[/COPY_CLIPBOARD\]', '', ai_text, flags=re.DOTALL)
-
-    # 4. Open Best Action URL in Browser
-    for url in re.findall(r'\[OPEN_URL:\s*(https?://[^\]]+)\]', ai_text):
-        webbrowser.open(url.strip())
-        logs.append(f"🌐 **Opened in Browser:** `{url.strip()}`")
-    ai_text = re.sub(r'\[OPEN_URL:\s*.*?\]', '', ai_text)
-
     return ai_text.strip(), logs
 
 async def execute_goal(prompt):
     if not prompt.strip():
-        return "Please type a goal or click a pillar button!", list_workspace_files(), load_memory()
+        return "⚠️ Enter a command or tap one of the 8 Action Cards above.", list_workspace_files(), load_memory()
     live_data = ""
     lp = prompt.lower()
     if "[live_jobs]" in lp or "find jobs" in lp:
@@ -152,15 +142,13 @@ async def execute_goal(prompt):
 
     sys_prompt = (
         f"You are an Action AI for Gen Z. USER MEMORY:\n{load_memory()}\n\n"
-        "SYSTEM ACTION COMMANDS YOU CAN TRIGGER:\n"
-        "1. Save outputs: [SAVE_FILE: filename.md]\n<content>\n[/SAVE_FILE] (use .csv for budgets)\n"
+        "SYSTEM ACTION COMMANDS:\n"
+        "1. Save files: [SAVE_FILE: filename.md]\n<content>\n[/SAVE_FILE] (use .csv for budgets)\n"
         "2. Save facts: [REMEMBER: short fact]\n"
-        "3. Copy best pitch/script to clipboard: [COPY_CLIPBOARD]\n<ready-to-paste text>\n[/COPY_CLIPBOARD]\n"
-        "4. If user says 'open best', launch the top URL: [OPEN_URL: https://...]\n\n"
+        "3. Copy pitch/script: [COPY_CLIPBOARD]\n<text>\n[/COPY_CLIPBOARD]\n\n"
         f"GOAL: {prompt}{live_data}"
     )
 
-    # Try auto-routed default provider first (most reliable), then fallbacks
     for m in ["", "gpt-4o-mini", "gpt-4o"]:
         try:
             res = await asyncio.wait_for(
@@ -172,35 +160,52 @@ async def execute_goal(prompt):
                 clean, logs = execute_system_actions(raw)
                 banner = ("\n\n---\n### ✅ Executed System Actions\n" + "\n".join(f"- {x}" for x in logs)) if logs else ""
                 return clean + banner, list_workspace_files(), load_memory()
-        except Exception as e:
-            print(f"Attempt ({m or 'auto'}) failed: {e}")
+        except Exception:
             continue
-    return "⚠️ Providers timed out—click **🚀 Execute & Save Action** once more.", list_workspace_files(), load_memory()
+    return "⚠️ Free providers are momentarily busy—tap **⚡ Execute Action** once more.", list_workspace_files(), load_memory()
+
+CUSTOM_CSS = """
+@import url('https://googleapis.com');
+body, .gradio-container { background-color: #09090b !important; color: #f4f4f5 !important; font-family: 'Plus Jakarta Sans', sans-serif !important; }
+.gradio-container { max-width: 880px !important; margin: 0 auto !important; padding: 1.25rem !important; }
+.hero-card { background: linear-gradient(135deg, #18181b 0%, #09090b 100%); border: 1px solid #27272a; border-radius: 20px; padding: 24px; margin-bottom: 18px; }
+.badge-pill { display: inline-block; background: rgba(16, 185, 129, 0.14); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; padding: 4px 12px; border-radius: 999px; margin-bottom: 10px; }
+.hero-title { font-size: 28px !important; font-weight: 800 !important; margin: 0 0 6px 0 !important; color: #ffffff !important; }
+.hero-sub { color: #a1a1aa !important; font-size: 14px !important; margin: 0 !important; }
+.bento-btn { background: #18181b !important; border: 1px solid #27272a !important; color: #e4e4e7 !important; border-radius: 14px !important; padding: 12px 10px !important; font-weight: 600 !important; font-size: 13px !important; }
+.bento-btn:hover { border-color: #10b981 !important; background: #1f2421 !important; }
+.primary-run { background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important; color: #09090b !important; font-weight: 800 !important; border: none !important; border-radius: 14px !important; padding: 14px !important; font-size: 15px !important; }
+.output-panel { background: #121215 !important; border: 1px solid #27272a !important; border-radius: 18px !important; padding: 20px !important; margin-top: 12px !important; }
+footer { display: none !important; }
+"""
+
+theme = gr.themes.Base(primary_hue="emerald", neutral_hue="zinc").set(body_background_fill="#09090b", block_background_fill="#18181b", block_border_color="#27272a")
 
 with gr.Blocks() as demo:
-    gr.Markdown("# ⚡ Gen Z Life OS — Complete 8-Pillar Action Agent")
-    goal_input = gr.Textbox(label="What should your AI execute today?", lines=2)
-    run_btn = gr.Button("🚀 Execute & Save Action", variant="primary")
-    with gr.Row():
-        b1 = gr.Button("💼 Find Jobs (Live)")
-        b2 = gr.Button("💸 Earn Money (Bounties)")
-        b3 = gr.Button("🚀 Opportunities")
-        b4 = gr.Button("🎬 Create Content")
-    with gr.Row():
-        b5 = gr.Button("📊 Manage Money")
-        b6 = gr.Button("🏗️ Build Business")
-        b7 = gr.Button("🧠 Learn Skills")
-        b8 = gr.Button("⚡ Lifestyle")
-    output_box = gr.Markdown()
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown("### 📂 Workspace Files")
+    gr.HTML('<div class="hero-card"><span class="badge-pill">● LIVE 24/7 · 100% OPEN-SOURCE MCP ENGINE</span><h1 class="hero-title">⚡ Gen Z Life OS</h1><p class="hero-sub">Not a chatbot that just talks—an autonomous Action Agent that scrapes live jobs, hunts bounties, writes scripts, and builds files.</p></div>')
+    with gr.Tabs():
+        with gr.Tab("⚡ Command Center"):
+            goal_input = gr.Textbox(label="Command / Goal", placeholder="Tap any Bento card below or type a custom action...", lines=2)
+            run_btn = gr.Button("⚡ Execute Action", elem_classes="primary-run")
+            with gr.Row():
+                b1 = gr.Button("💼 Find Jobs", elem_classes="bento-btn")
+                b2 = gr.Button("💸 Earn Money", elem_classes="bento-btn")
+                b3 = gr.Button("🚀 Opportunities", elem_classes="bento-btn")
+                b4 = gr.Button("🎬 Create Content", elem_classes="bento-btn")
+            with gr.Row():
+                b5 = gr.Button("📊 Manage Money", elem_classes="bento-btn")
+                b6 = gr.Button("🏗️ Build Business", elem_classes="bento-btn")
+                b7 = gr.Button("🧠 Learn Skills", elem_classes="bento-btn")
+                b8 = gr.Button("⚡ Lifestyle", elem_classes="bento-btn")
+            with gr.Group(elem_classes="output-panel"):
+                output_box = gr.Markdown("*Ready. Select a pillar or type an action above to begin.*")
+        with gr.Tab("📂 Saved Files & Vault"):
             files_box = gr.Markdown(value=list_workspace_files)
-            file_name_in = gr.Textbox(label="Preview a file (e.g. budget_tracker.csv)", placeholder="reel_scripts.md")
-            view_btn = gr.Button("👁️ Read File")
+            with gr.Row():
+                file_name_in = gr.Textbox(label="File Name", placeholder="e.g. live_jobs.md", scale=3)
+                view_btn = gr.Button("👁️ Open File", elem_classes="bento-btn", scale=1)
             file_preview = gr.Markdown()
-        with gr.Column():
-            gr.Markdown("### 🧠 Persistent Memory")
+        with gr.Tab("🧠 AI Memory"):
             memory_box = gr.Markdown(value=load_memory)
 
     run_btn.click(execute_goal, inputs=goal_input, outputs=[output_box, files_box, memory_box])
@@ -209,9 +214,9 @@ with gr.Blocks() as demo:
     b2.click(lambda: "[LIVE_BOUNTIES] Pick top 3 GitHub paid bounties with links, put a proposal comment in [COPY_CLIPBOARD], and save to live_bounties.md", outputs=goal_input)
     b3.click(lambda: "[LIVE_OPPS] Extract top 4 live tech opportunities with links and save to live_opportunities.md", outputs=goal_input)
     b4.click(lambda: "Write 3 viral 30s Reel scripts on free AI tools, put the best script in [COPY_CLIPBOARD], and save all to reel_scripts.md", outputs=goal_input)
-    b5.click(lambda: "Add today's expenses (₹150 lunch, ₹99 mobile data) to budget_tracker.csv and summarize my spending.", outputs=goal_input)
+    b5.click(lambda: "Create or update a monthly student budget CSV (Date,Category,Item,Amount_INR) and save to budget_tracker.csv", outputs=goal_input)
     b6.click(lambda: "Create a 48-hour zero-cost digital product launch plan and save to business_launch.md", outputs=goal_input)
     b7.click(lambda: "Remember my goal to master AI automation, and save a 7-day skill roadmap to skill_roadmap.md", outputs=goal_input)
-    b8.click(lambda: "Build a daily focus & fitness schedule and save to daily_routine.md", outputs=goal_input)
+    b8.click(lambda: "Build a high-focus daily routine for deep work, fitness, and study and save to daily_routine.md", outputs=goal_input)
 
-demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)), theme=gr.themes.Soft(primary_hue="emerald", neutral_hue="zinc"))
+demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)), theme=theme, css=CUSTOM_CSS)

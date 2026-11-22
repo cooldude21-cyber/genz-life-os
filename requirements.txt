@@ -1,0 +1,6 @@
+gradio
+g4f
+requests
+certifi
+mcp
+mcp-server-fetch
